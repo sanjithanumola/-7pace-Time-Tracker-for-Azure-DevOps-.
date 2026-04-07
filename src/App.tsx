@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ReactNode, useState } from "react";
+import { ReactNode, useState, useEffect, useRef, FormEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { GoogleGenAI } from "@google/genai";
+import { supabase } from "./lib/supabase";
 import { 
   Clock, 
   CheckCircle2, 
@@ -24,7 +25,14 @@ import {
   Send,
   Loader2,
   ArrowLeft,
-  Sparkles
+  Sparkles,
+  Lock,
+  User,
+  LogOut,
+  Play,
+  Pause,
+  UserPlus,
+  Plus
 } from "lucide-react";
 
 const Section = ({ title, children, icon: Icon, id }: { title: string, children: ReactNode, icon?: any, id?: string }) => (
@@ -55,10 +63,194 @@ const FeatureCard = ({ title, description, icon: Icon }: { title: string, descri
 );
 
 export default function App() {
-  const [view, setView] = useState<"guide" | "ai">("guide");
+  const [view, setView] = useState<"guide" | "ai" | "dashboard" | "login" | "signup">("guide");
+  const [session, setSession] = useState<any>(null);
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+  
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "ai", content: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [isAddingTask, setIsAddingTask] = useState(false);
+  const [newTask, setNewTask] = useState({ title: "", project: "", description: "" });
+  
+  const [selectedTask, setSelectedTask] = useState<any>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch tasks from Supabase
+  useEffect(() => {
+    if (!session?.user?.id) {
+      // Default tasks for guide/preview mode
+      setTasks([
+        { id: "AD-101", title: "Implement Auth Flow", project: "Project Phoenix", seconds: 15600, status: "In Progress", description: "Setting up OAuth2 with Azure Active Directory integration." },
+        { id: "AD-102", title: "Refactor Database Schema", project: "Project Phoenix", seconds: 8100, status: "Completed", description: "Optimizing query performance for large datasets." },
+        { id: "AD-105", title: "UI Bug Fixes", project: "Mobile App", seconds: 6300, status: "In Progress", description: "Fixing layout issues on smaller screen devices." },
+        { id: "AD-110", title: "API Documentation", project: "Core API", seconds: 10800, status: "Pending", description: "Updating Swagger docs for the new v2 endpoints." },
+      ]);
+      return;
+    }
+
+    const fetchTasks = async () => {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("*")
+        .order("created_at", { ascending: false });
+      
+      if (data) {
+        setTasks(data.map(t => ({
+          ...t,
+          id: t.task_code || t.id,
+          real_id: t.id // Keep the UUID for updates
+        })));
+      }
+    };
+
+    fetchTasks();
+
+    // Real-time subscription
+    const channel = supabase
+      .channel("tasks-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, fetchTasks)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [session]);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) setView("dashboard");
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) setView("dashboard");
+      else setView("guide");
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (activeTaskId) {
+      timerRef.current = setInterval(() => {
+        setTasks(prev => prev.map(t => 
+          t.id === activeTaskId ? { ...t, seconds: t.seconds + 1 } : t
+        ));
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [activeTaskId]);
+
+  const formatTime = (totalSeconds: number) => {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    return `${h}h ${m}m ${s}s`;
+  };
+
+  const handleLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthMessage(null);
+
+    // Fallback for demo if keys are missing
+    if (!import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes("placeholder")) {
+      setSession({ user: { email: loginForm.email } });
+      setView("dashboard");
+      return;
+    }
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email: loginForm.email,
+      password: loginForm.password,
+    });
+    if (error) setAuthError(error.message);
+  };
+
+  const handleSignUp = async (e: FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthMessage(null);
+
+    // Fallback for demo if keys are missing
+    if (!import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes("placeholder")) {
+      setSession({ user: { email: loginForm.email } });
+      setView("dashboard");
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signUp({
+      email: loginForm.email,
+      password: loginForm.password,
+    });
+
+    if (error) {
+      setAuthError(error.message);
+    } else if (data.session) {
+      // Signed in immediately (email confirmation disabled)
+      setSession(data.session);
+      setView("dashboard");
+    } else {
+      // Email confirmation required
+      setAuthMessage("Success! Please check your email to confirm your account before logging in.");
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setActiveTaskId(null);
+    setTasks([]); // Clear tasks on logout
+    setView("guide");
+  };
+
+  const handleAddTask = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!session?.user?.id) return;
+
+    const taskCode = `AD-${Math.floor(100 + Math.random() * 900)}`;
+    const { data, error } = await supabase
+      .from("tasks")
+      .insert([{
+        user_id: session.user.id,
+        task_code: taskCode,
+        title: newTask.title,
+        project: newTask.project,
+        description: newTask.description,
+        seconds: 0,
+        status: "Pending"
+      }])
+      .select();
+
+    if (error) {
+      console.error("Error adding task:", error);
+    } else {
+      setIsAddingTask(false);
+      setNewTask({ title: "", project: "", description: "" });
+    }
+  };
+
+  const toggleTimer = async (task: any) => {
+    if (activeTaskId === task.id) {
+      // Stopping timer - sync with Supabase
+      const currentTask = tasks.find(t => t.id === task.id);
+      if (currentTask && session?.user?.id && currentTask.real_id) {
+        await supabase
+          .from("tasks")
+          .update({ seconds: currentTask.seconds })
+          .eq("id", currentTask.real_id);
+      }
+      setActiveTaskId(null);
+    } else {
+      setActiveTaskId(task.id);
+    }
+  };
 
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -87,6 +279,343 @@ export default function App() {
       setIsLoading(false);
     }
   };
+
+  if (view === "login" || view === "signup") {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 font-sans">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white p-10 rounded-3xl border border-slate-200 shadow-xl w-full max-w-md"
+        >
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+              <Clock className="text-white w-8 h-8" />
+            </div>
+            <h2 className="text-3xl font-bold text-slate-900">{view === "login" ? "Welcome Back" : "Create Account"}</h2>
+            <p className="text-slate-500 mt-2">{view === "login" ? "Log in to your 7pace account" : "Start tracking your time with 7pace"}</p>
+          </div>
+          
+          {authError && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
+              {authError}
+            </div>
+          )}
+
+          {authMessage && (
+            <div className="mb-6 p-4 bg-green-50 border border-green-100 rounded-xl text-green-600 text-sm flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+              {authMessage}
+            </div>
+          )}
+
+          <form onSubmit={view === "login" ? handleLogin : handleSignUp} className="space-y-6">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-2">Email Address</label>
+              <div className="relative">
+                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                <input 
+                  type="email" 
+                  required
+                  value={loginForm.email}
+                  onChange={(e) => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-12 pr-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                  placeholder="name@company.com"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-2">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                <input 
+                  type="password" 
+                  required
+                  value={loginForm.password}
+                  onChange={(e) => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-12 pr-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+            <button 
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+            >
+              {view === "login" ? <Lock className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />}
+              {view === "login" ? "Log In to Tracker" : "Create Account"}
+            </button>
+          </form>
+          
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => setView(view === "login" ? "signup" : "login")}
+              className="text-blue-600 hover:underline font-medium text-sm"
+            >
+              {view === "login" ? "Don't have an account? Sign up" : "Already have an account? Log in"}
+            </button>
+          </div>
+
+          <button 
+            onClick={() => setView("guide")}
+            className="w-full mt-4 text-slate-500 hover:text-blue-600 font-medium text-sm transition-colors"
+          >
+            Back to Documentation
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (view === "dashboard") {
+    const currentTask = tasks.find(t => t.id === selectedTask?.id) || selectedTask;
+    const totalSecondsToday = tasks.reduce((acc, t) => acc + t.seconds, 0);
+
+    return (
+      <div className="min-h-screen bg-slate-50 font-sans flex flex-col">
+        {/* Dashboard Header */}
+        <header className="bg-white border-b border-slate-200 p-4 sticky top-0 z-50">
+          <div className="max-w-6xl mx-auto flex justify-between items-center">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <LayoutDashboard className="w-6 h-6 text-blue-600" />
+                <h1 className="text-xl font-bold text-slate-900">7pace Dashboard</h1>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="hidden md:flex flex-col items-end mr-2">
+                <span className="text-sm font-bold text-slate-900">{session?.user?.email}</span>
+                <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Active User</span>
+              </div>
+              <button 
+                onClick={() => setView("ai")}
+                className="flex items-center gap-2 bg-blue-50 text-blue-600 px-4 py-2 rounded-lg font-medium hover:bg-blue-100 transition-all"
+              >
+                <Sparkles className="w-4 h-4" />
+                Ask AI
+              </button>
+              <button 
+                onClick={handleLogout}
+                className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 max-w-6xl w-full mx-auto p-6">
+          {!import.meta.env.VITE_SUPABASE_URL && (
+            <div className="mb-8 p-4 bg-amber-50 border border-amber-200 rounded-2xl text-amber-800 flex items-center gap-3">
+              <AlertCircle className="w-6 h-6 flex-shrink-0" />
+              <p className="text-sm">
+                <strong>Supabase not configured:</strong> Please add your <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to the environment variables to enable real authentication and data persistence.
+              </p>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Stats Summary */}
+            <div className="lg:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-6 mb-4">
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Total Tracked Today</p>
+                <h3 className="text-3xl font-bold text-slate-900 font-mono">{formatTime(totalSecondsToday)}</h3>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Active Projects</p>
+                <h3 className="text-3xl font-bold text-slate-900">3</h3>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-sm font-medium text-slate-500 uppercase tracking-wider mb-1">Billable Efficiency</p>
+                <h3 className="text-3xl font-bold text-blue-600">94%</h3>
+              </div>
+            </div>
+
+            {/* Task List / Tracker */}
+            <div className="lg:col-span-2 space-y-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                  <Timer className="w-5 h-5 text-blue-600" />
+                  Active Time Tracker
+                </h2>
+                {session && (
+                  <button 
+                    onClick={() => setIsAddingTask(true)}
+                    className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-700 transition-all flex items-center gap-2"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New Task
+                  </button>
+                )}
+              </div>
+
+              {isAddingTask && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-white p-6 rounded-2xl border border-blue-200 shadow-md mb-6"
+                >
+                  <h3 className="text-lg font-bold text-slate-900 mb-4">Create New Task</h3>
+                  <form onSubmit={handleAddTask} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <input 
+                        type="text" 
+                        placeholder="Task Title"
+                        required
+                        value={newTask.title}
+                        onChange={e => setNewTask(prev => ({ ...prev, title: e.target.value }))}
+                        className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                      <input 
+                        type="text" 
+                        placeholder="Project Name"
+                        required
+                        value={newTask.project}
+                        onChange={e => setNewTask(prev => ({ ...prev, project: e.target.value }))}
+                        className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                    <textarea 
+                      placeholder="Description"
+                      value={newTask.description}
+                      onChange={e => setNewTask(prev => ({ ...prev, description: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none h-20"
+                    />
+                    <div className="flex gap-2">
+                      <button type="submit" className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold">Save Task</button>
+                      <button type="button" onClick={() => setIsAddingTask(false)} className="text-slate-500 font-medium">Cancel</button>
+                    </div>
+                  </form>
+                </motion.div>
+              )}
+
+              {tasks.length === 0 ? (
+                <div className="bg-white p-12 rounded-2xl border border-dashed border-slate-200 text-center">
+                  <Clock className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+                  <p className="text-slate-500 font-medium">No tasks found. Create your first task to start tracking!</p>
+                </div>
+              ) : (
+                tasks.map((task) => (
+                  <motion.div 
+                    key={task.id}
+                    whileHover={{ scale: 1.01 }}
+                    className={`bg-white p-5 rounded-2xl border transition-all flex items-center justify-between group cursor-pointer ${
+                      activeTaskId === task.id ? "border-blue-500 ring-2 ring-blue-100 shadow-md" : "border-slate-200 shadow-sm"
+                    }`}
+                    onClick={() => setSelectedTask(task)}
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                        activeTaskId === task.id ? "bg-blue-600 text-white animate-pulse" : 
+                        task.status === "Completed" ? "bg-green-100 text-green-600" : "bg-blue-100 text-blue-600"
+                      }`}>
+                        {activeTaskId === task.id ? <Play className="w-6 h-6 fill-current" /> : 
+                         task.status === "Completed" ? <CheckCircle2 className="w-6 h-6" /> : <Clock className="w-6 h-6" />}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-400">{task.id}</span>
+                          <h4 className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors">{task.title}</h4>
+                        </div>
+                        <p className="text-sm text-slate-500">{task.project}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-lg font-bold font-mono ${activeTaskId === task.id ? "text-blue-600" : "text-slate-900"}`}>
+                        {formatTime(task.seconds)}
+                      </div>
+                      <div className={`text-xs font-medium px-2 py-0.5 rounded-full inline-block ${
+                        task.status === "Completed" ? "bg-green-50 text-green-600" : "bg-blue-50 text-blue-600"
+                      }`}>
+                        {task.status}
+                      </div>
+                    </div>
+                  </motion.div>
+                ))
+              )}
+            </div>
+
+            {/* Task Details / Info Panel */}
+            <div className="lg:col-span-1">
+              <AnimatePresence mode="wait">
+                {currentTask ? (
+                  <motion.div 
+                    key={currentTask.id}
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    className="bg-white p-8 rounded-2xl border border-slate-200 shadow-lg sticky top-24"
+                  >
+                    <div className="flex justify-between items-start mb-6">
+                      <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center text-white">
+                        <Info className="w-6 h-6" />
+                      </div>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setSelectedTask(null); }}
+                        className="text-slate-400 hover:text-slate-600"
+                      >
+                        <Zap className="w-5 h-5 rotate-45" />
+                      </button>
+                    </div>
+                    <h3 className="text-2xl font-bold text-slate-900 mb-2">{currentTask.title}</h3>
+                    <p className="text-blue-600 font-semibold mb-6">{currentTask.id} • {currentTask.project}</p>
+                    
+                    <div className="space-y-6">
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Description</h4>
+                        <p className="text-slate-600 leading-relaxed">{currentTask.description}</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-slate-50 p-3 rounded-xl">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase">Tracked Time</p>
+                          <p className="text-lg font-bold text-slate-900 font-mono">{formatTime(currentTask.seconds)}</p>
+                        </div>
+                        <div className="bg-slate-50 p-3 rounded-xl">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase">Status</p>
+                          <p className="text-lg font-bold text-slate-900">{currentTask.status}</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => toggleTimer(currentTask)}
+                        className={`w-full font-bold py-3 rounded-xl shadow-md transition-all flex items-center justify-center gap-2 ${
+                          activeTaskId === currentTask.id 
+                            ? "bg-red-500 hover:bg-red-600 text-white" 
+                            : "bg-blue-600 hover:bg-blue-700 text-white"
+                        }`}
+                      >
+                        {activeTaskId === currentTask.id ? (
+                          <>
+                            <Pause className="w-5 h-5 fill-current" />
+                            Stop Timer
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-5 h-5 fill-current" />
+                            Start Timer
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </motion.div>
+                ) : (
+                  <div className="bg-slate-100 border-2 border-dashed border-slate-200 rounded-2xl p-12 text-center flex flex-col items-center justify-center h-[400px]">
+                    <Clock className="w-12 h-12 text-slate-300 mb-4" />
+                    <p className="text-slate-500 font-medium">Select a task to view detailed 7pace information</p>
+                  </div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        </main>
+
+        <footer className="bg-white border-t border-slate-200 p-4 text-center text-slate-400 text-xs">
+          7pace Dashboard Interface • Created by Sanjith Anumola
+        </footer>
+      </div>
+    );
+  }
 
   if (view === "ai") {
     return (
@@ -194,6 +723,12 @@ export default function App() {
             <a href="#features" className="hover:text-blue-600 transition-colors">Features</a>
             <a href="#workflow" className="hover:text-blue-600 transition-colors">Workflow</a>
             <a href="#benefits" className="hover:text-blue-600 transition-colors">Benefits</a>
+            <button 
+              onClick={() => setView("dashboard")}
+              className="text-blue-600 font-bold hover:underline"
+            >
+              Dashboard
+            </button>
           </nav>
         </div>
       </header>
@@ -216,6 +751,84 @@ export default function App() {
             designed specifically for software development teams.
           </p>
         </motion.div>
+
+        <Section title="Live Dashboard Preview" icon={LayoutDashboard}>
+          <div className="bg-slate-100/50 p-4 md:p-8 rounded-3xl border border-slate-200 shadow-inner mb-8">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Live Demo Mode</span>
+              </div>
+              <button 
+                onClick={() => setView("signup")}
+                className="text-xs font-bold text-blue-600 hover:underline"
+              >
+                Sign up to save your data →
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Total Tracked Today</p>
+                <h3 className="text-2xl font-bold text-slate-900 font-mono">11h 20m 0s</h3>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Active Projects</p>
+                <h3 className="text-2xl font-bold text-slate-900">3</h3>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Billable Efficiency</p>
+                <h3 className="text-2xl font-bold text-blue-600">94%</h3>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 space-y-3">
+                <h4 className="text-sm font-bold text-slate-900 mb-2 flex items-center gap-2">
+                  <Timer className="w-4 h-4 text-blue-600" />
+                  Active Time Tracker
+                </h4>
+                {tasks.map((task) => (
+                  <div 
+                    key={task.id}
+                    className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between group cursor-default"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center">
+                        <Clock className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400">{task.id}</span>
+                          <h5 className="text-sm font-bold text-slate-900">{task.title}</h5>
+                        </div>
+                        <p className="text-[11px] text-slate-500">{task.project}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-bold font-mono text-slate-900">
+                        {formatTime(task.seconds)}
+                      </div>
+                      <div className={`text-[9px] font-bold px-2 py-0.5 rounded-full inline-block ${
+                        task.status === "Completed" ? "bg-green-50 text-green-600" : "bg-blue-50 text-blue-600"
+                      }`}>
+                        {task.status}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="lg:col-span-1">
+                <div className="bg-white/50 border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center flex flex-col items-center justify-center h-full min-h-[200px]">
+                  <Clock className="w-10 h-10 text-slate-300 mb-3" />
+                  <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                    Select a task to view detailed<br />7pace information
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Section>
 
         <Section title="1. Introduction" icon={Info}>
           <p className="mb-4">
@@ -390,10 +1003,10 @@ export default function App() {
           </p>
           <div className="flex justify-center mt-12">
             <button 
-              onClick={() => setView("ai")}
+              onClick={() => setView("login")}
               className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center gap-2 group"
             >
-              Get Started with 7pace
+              Open 7pace Dashboard
               <ChevronRight className="group-hover:translate-x-1 transition-transform" />
             </button>
           </div>
