@@ -72,7 +72,13 @@ export default function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "ai", content: string }[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
   
+  const goToApp = () => {
+    if (session) setView("dashboard");
+    else setView("login");
+  };
+
   const [tasks, setTasks] = useState<any[]>([]);
   const [isAddingTask, setIsAddingTask] = useState(false);
   const [newTask, setNewTask] = useState({ title: "", project: "", description: "" });
@@ -126,10 +132,13 @@ export default function App() {
       if (session) setView("dashboard");
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
-      if (session) setView("dashboard");
-      else setView("guide");
+      if (session) {
+        setView("dashboard");
+      } else if (event === "SIGNED_OUT") {
+        setView("guide");
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -159,47 +168,67 @@ export default function App() {
     e.preventDefault();
     setAuthError(null);
     setAuthMessage(null);
+    setIsAuthLoading(true);
 
-    // Fallback for demo if keys are missing
-    if (!import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes("placeholder")) {
-      setSession({ user: { email: loginForm.email } });
-      setView("dashboard");
-      return;
+    try {
+      // Fallback for demo if keys are missing
+      if (!import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes("placeholder")) {
+        setSession({ user: { email: loginForm.email } });
+        setView("dashboard");
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginForm.email,
+        password: loginForm.password,
+      });
+
+      if (error) {
+        setAuthError(error.message);
+      } else if (data.session) {
+        setSession(data.session);
+        setView("dashboard");
+      }
+    } catch (err: any) {
+      setAuthError("An unexpected error occurred. Please try again.");
+    } finally {
+      setIsAuthLoading(false);
     }
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email: loginForm.email,
-      password: loginForm.password,
-    });
-    if (error) setAuthError(error.message);
   };
 
   const handleSignUp = async (e: FormEvent) => {
     e.preventDefault();
     setAuthError(null);
     setAuthMessage(null);
+    setIsAuthLoading(true);
 
-    // Fallback for demo if keys are missing
-    if (!import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes("placeholder")) {
-      setSession({ user: { email: loginForm.email } });
-      setView("dashboard");
-      return;
-    }
+    try {
+      // Fallback for demo if keys are missing
+      if (!import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL.includes("placeholder")) {
+        setSession({ user: { email: loginForm.email } });
+        setView("dashboard");
+        return;
+      }
 
-    const { data, error } = await supabase.auth.signUp({
-      email: loginForm.email,
-      password: loginForm.password,
-    });
+      const { data, error } = await supabase.auth.signUp({
+        email: loginForm.email,
+        password: loginForm.password,
+      });
 
-    if (error) {
-      setAuthError(error.message);
-    } else if (data.session) {
-      // Signed in immediately (email confirmation disabled)
-      setSession(data.session);
-      setView("dashboard");
-    } else {
-      // Email confirmation required
-      setAuthMessage("Success! Please check your email to confirm your account before logging in.");
+      if (error) {
+        setAuthError(error.message);
+      } else if (data.session) {
+        // Signed in immediately (email confirmation disabled)
+        setSession(data.session);
+        setView("dashboard");
+      } else {
+        // Email confirmation required
+        setAuthMessage("Success! Please check your email to confirm your account before logging in.");
+      }
+    } catch (err: any) {
+      setAuthError("An unexpected error occurred. Please try again.");
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
@@ -341,10 +370,15 @@ export default function App() {
             </div>
             <button 
               type="submit"
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+              disabled={isAuthLoading}
+              className={`w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 ${isAuthLoading ? "opacity-70 cursor-not-allowed" : ""}`}
             >
-              {view === "login" ? <Lock className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />}
-              {view === "login" ? "Log In to Tracker" : "Create Account"}
+              {isAuthLoading ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                view === "login" ? <Lock className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />
+              )}
+              {isAuthLoading ? "Processing..." : (view === "login" ? "Log In to Tracker" : "Create Account")}
             </button>
           </form>
           
@@ -719,16 +753,24 @@ export default function App() {
             </div>
             <span className="text-xl font-bold text-slate-900">7pace <span className="text-blue-600">AI</span></span>
           </div>
-          <nav className="hidden md:flex gap-6 text-sm font-medium text-slate-600">
+          <nav className="hidden md:flex gap-6 text-sm font-medium text-slate-600 items-center">
             <a href="#features" className="hover:text-blue-600 transition-colors">Features</a>
             <a href="#workflow" className="hover:text-blue-600 transition-colors">Workflow</a>
             <a href="#benefits" className="hover:text-blue-600 transition-colors">Benefits</a>
             <button 
               onClick={() => setView("dashboard")}
-              className="text-blue-600 font-bold hover:underline"
+              className="text-slate-600 hover:text-blue-600 font-medium transition-colors"
             >
               Dashboard
             </button>
+            {!session && (
+              <button 
+                onClick={() => setView("login")}
+                className="bg-blue-600 text-white px-5 py-2 rounded-full font-bold hover:bg-blue-700 transition-all shadow-md"
+              >
+                Log In
+              </button>
+            )}
           </nav>
         </div>
       </header>
@@ -759,12 +801,21 @@ export default function App() {
                 <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
                 <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Live Demo Mode</span>
               </div>
-              <button 
-                onClick={() => setView("signup")}
-                className="text-xs font-bold text-blue-600 hover:underline"
-              >
-                Sign up to save your data →
-              </button>
+              <div className="flex items-center gap-4">
+                <button 
+                  onClick={() => setView("login")}
+                  className="text-xs font-bold text-blue-600 hover:underline"
+                >
+                  Log in
+                </button>
+                <span className="text-slate-300 text-xs">|</span>
+                <button 
+                  onClick={() => setView("signup")}
+                  className="text-xs font-bold text-blue-600 hover:underline"
+                >
+                  Sign up to save your data →
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
@@ -1003,7 +1054,7 @@ export default function App() {
           </p>
           <div className="flex justify-center mt-12">
             <button 
-              onClick={() => setView("login")}
+              onClick={goToApp}
               className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-8 rounded-full shadow-lg hover:shadow-xl transition-all flex items-center gap-2 group"
             >
               Open 7pace Dashboard
